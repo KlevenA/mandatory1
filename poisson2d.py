@@ -61,7 +61,15 @@ class Poisson2D:
 
     def laplace(self):
         """Return vectorized Laplace operator"""
-        raise NotImplementedError
+        # \nabla^2u = d^2u/dx^2+d^2u/dy^2
+        L = self.L
+        N = self.N
+        dx = N/L; dy = dx
+        D2x = (1./dx**2)*self.D2(N)
+        D2y = (1./dy**2)*self.D2(N)
+        
+        I = sparse.eye(self.N+1)
+        return (sparse.kron(D2x, I)+sparse.kron(I,D2y)).tolil() # kroneckers delta 
 
     def get_boundary_indices(self):
         """Return indices of vectorized matrix that belongs to the boundary"""
