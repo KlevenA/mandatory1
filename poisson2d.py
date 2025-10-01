@@ -44,7 +44,20 @@ class Poisson2D:
 
     def D2(self):
         """Return second order differentiation matrix"""
-        raise NotImplementedError
+                # 2nd order diff.matrix
+        # d^2u/dx^2=u(i-1)-2u(i)+u(i+1)/(L/N)^2
+        L = self.L; N = self.N
+        xi = np.linspace(0, L, N+1); yj = np.linspace(0, L, N+1) 
+        xij, yij = np.meshgrid(xi, yj, indexing='ij')
+
+        diagonal = np.ones(N+1)*(-2)
+        diagonal_upanddown = np.ones(N)
+        D2 = sparse.diags([diagonal_upanddown, diagonal, diagonal_upanddown], 
+                          offsets=[-1, 0, 1], shape=(N+1,N+1))
+        D2 = D2.tolil() # make format workable to add Ends from taylor exp.
+        D2[0,0:4] = 2,-5,4,1 
+        D2[-1,-4:] = -1,4,-5,2  
+        D2 = D2/(L/N)**2 # /h^2 
 
     def laplace(self):
         """Return vectorized Laplace operator"""
