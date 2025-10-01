@@ -33,7 +33,14 @@ class Poisson2D:
     def create_mesh(self, N):
         """Create 2D mesh and store in self.xij and self.yij"""
         # self.xij, self.yij ...
-        raise NotImplementedError
+        self.N = N
+        self.h = self.L/N 
+        xi = np.linspace(0, self.L, N+1) # xi array
+        yj = np.linspace(0, self.L, N+1) # yj array 
+  
+        self.xij, self.yij = np.meshgrid(xi, yj, indexing='ij') #
+
+        return self.xij, self.yij
 
     def D2(self):
         """Return second order differentiation matrix"""
