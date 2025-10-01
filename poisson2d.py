@@ -73,7 +73,10 @@ class Poisson2D:
 
     def get_boundary_indices(self):
         """Return indices of vectorized matrix that belongs to the boundary"""
-        raise NotImplementedError
+        N = self.N
+        B = np.ones((N+1, N+1), dtype=bool) # make ones-matrix same size as grid
+        B[1:-1,1:-1]=0 # making all points at boundary = 0
+        return np.where(B.ravel() ==1)[0] # get indices of all points==0
 
     def assemble(self):
         """Return assembled matrix A and right hand side vector b"""
