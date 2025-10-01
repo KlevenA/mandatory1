@@ -99,7 +99,12 @@ class Poisson2D:
 
     def l2_error(self, u):
         """Return l2-error norm"""
-        raise NotImplementedError
+        dx = self.px.dx
+        dy = dx # change from dy = dx for less dependability 
+        diff_uue_square = (u - self.meshfunction(self.ue))**2
+        diff_sum = np.sum(diff_uue_square)
+        l2err = np.sqrt(diff_sum*dx*dy)
+        return l2err
 
     def __call__(self, N):
         """Solve Poisson's equation.
