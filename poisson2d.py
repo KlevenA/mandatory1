@@ -163,7 +163,7 @@ class Poisson2D:
         The value of u(x, y)
 
         """
-        raise NotImplementedError
+        # raise NotImplementedError
 
 def test_convergence_poisson2d():
     # This exact solution is NOT zero on the entire boundary
