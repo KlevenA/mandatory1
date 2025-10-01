@@ -81,7 +81,21 @@ class Poisson2D:
     def assemble(self):
         """Return assembled matrix A and right hand side vector b"""
         # return A, b
-        raise NotImplementedError
+        N = self.N
+        A = self.laplace()
+        boundary = self.get_boundary_indices()
+        A = A.tolil()
+        for i in boundary:
+            A[i] = 0 # setting all boundary-points to be zero
+            A[i,i] = 1 # with the exception of the diagonal
+        A = A.tocsr()
+        
+        b = np.zeros(N+1,N+1) # initialize b 
+        b[:,:] = self.meshfunction(f)
+        
+        uij = self.meshfunction(self.ue)
+        b.ravel()[boundary] = uij.ravel()[boundary]
+        return A, b
 
     def l2_error(self, u):
         """Return l2-error norm"""
