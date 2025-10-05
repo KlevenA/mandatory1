@@ -1,8 +1,6 @@
 import numpy as np
 import sympy as sp
 import scipy.sparse as sparse
-import matplotlib.pyplot as plt # just in case 
-
 
 
 x, y = sp.symbols('x,y')
@@ -31,18 +29,19 @@ class Poisson2D:
         """
         self.L = L # domain from 0 to L for x and y 
         self.ue = ue 
-        # self.f = sp.diff(self.ue, x, 2)+sp.diff(self.ue, y, 2)
+        self.f = sp.diff(self.ue, x, 2)+sp.diff(self.ue, y, 2)
         #self.px = Poisson(L, N)
         #self.py = Poisson(L, N)
-        # self.create_mesh()
+        #self.create_mesh()
+        
 
 
 
     def create_mesh(self, N):
         """Create 2D mesh and store in self.xij and self.yij"""
         # self.xij, self.yij ...
-        self.N = N
-        self.h = self.L/self.N
+        N = self.N 
+        self.h = self.L/N
         xi = np.linspace(0, self.L, N+1) # xi array
         yj = np.linspace(0, self.L, N+1) # yj array 
   
@@ -55,18 +54,15 @@ class Poisson2D:
         """Return second order differentiation matrix"""
         # 2nd order diff.matrix
         # d^2u/dx^2=u(i-1)-2u(i)+u(i+1)/(L/N)^2
-        # L = self.L; N = self.N
-        # xi = np.linspace(0, L, N+1); yj = np.linspace(0, L, N+1) 
-        # xij, yij = np.meshgrid(xi, yj, indexing='ij')
-        
+
         N = self.N; L = self.L
         diagonal = np.ones(N+1)*(-2)
         diagonal_upanddown = np.ones(N)
         D2 = sparse.diags([diagonal_upanddown, diagonal, diagonal_upanddown], 
                           offsets=[-1, 0, 1], shape=(N+1,N+1))
         D2 = D2.tolil() # make format workable to add Ends from taylor exp.
-        D2[0,0:4] = 2,-5,4,1 
-        D2[-1,-4:] = -1,4,-5,2  
+        # D2[0,0:4] = 2,-5,4,1 
+        # D2[-1,-4:] = -1,4,-5,2  
         D2 = D2/(L/N)**2 # /h^2 
         return D2
     
@@ -79,7 +75,7 @@ class Poisson2D:
         
         
         I = sparse.eye(self.N+1)
-        return (sparse.kron(D2x, I)+sparse.kron(I,D2y)).tolil() # kroneckers delta 
+        return (sparse.kron(D2x, I)+sparse.kron(I,D2y)).tolil() # kroneckers
 
 
     def get_boundary_indices(self):
@@ -100,6 +96,20 @@ class Poisson2D:
     
         A = self.laplace()
         boundary = self.get_boundary_indices()
+        ##################################################### 
+        f_function = sp.lambdify((x,y), self.f)
+        ue_function = sp.lambdify((x,y), self.ue)
+        b = f_function(self.xij, self.yij).ravel()
+        
+        A = A.tolil()
+        for n in boundary:
+            A.rows[n] = [n]
+            A.data[n] = [1]
+            i = n//(self.N+1)
+            j = n % (self.N+1)
+            b = float(ue_function(self.xij[i, j], self.yij[i, j]))
+        A = A.tocsr()
+        ######################################################
         for i in boundary:
             A[i] = 0 # setting all boundary-points to be zero
             A[i,i] = 1 # with the exception of the diagonal
@@ -110,6 +120,7 @@ class Poisson2D:
         
         uij = self.meshfunction(self.ue)
         b.ravel()[boundary] = uij.ravel()[boundary]
+        
         return A, b
 
 
@@ -117,11 +128,10 @@ class Poisson2D:
     def l2_error(self, u):
         """Return l2-error norm"""
         dx = self.L/self.N
-        dy = dx # change from dy = dx for less dependability 
+        dy = dx # since we have a uniform and square grid dx = dy 
         diff_uue_square = (u - self.meshfunction(self.ue))**2
         diff_sum = np.sum(diff_uue_square)
-        l2err = np.sqrt(diff_sum*dx*dy)
-        return l2err
+        return np.sqrt(diff_sum*dx*dy)
 
 
     def __call__(self, N):
@@ -137,8 +147,12 @@ class Poisson2D:
         The solution as a Numpy array
 
         """
+        self.h = self.L/N
+        self.create_mesh(N)
+            
         A, b = self.assemble(f=sp.diff(self.ue, x, 2)+sp.diff(self.ue, y, 2))
-        return sparse.linalg.spsolve(A, b.ravel().reshape((self.xij.N+1, self.yij.N+1)))
+        self.U = sparse.linalg.spsolve(A, b.ravel().reshape((N+1, N+1)))
+        return self.U
 
     def convergence_rates(self, m=6):
         """Compute convergence rates for a range of discretizations
@@ -179,10 +193,31 @@ class Poisson2D:
         The value of u(x, y)
 
         """
-        A, b = self.assemble(f=sp.diff(self.ue, x, 2)+sp.diff(self.ue, y, 2))
-        u = sparse.linalg.spsolve(A, b)
-        u = np.reshape(u, (self.N+1, self.N+1))
-        return u
+        dx = self.h; dy = dx
+        
+        if x < 0 or x > self.L or y < 0 or y > self.L:
+            raise ValueError("The coordinate is outside the domain")
+        else:
+            # Finding the closest point between (x,y) and (0,0)
+            x_close = np.floor(x/dx)
+            y_close = np.floor(y/dy)
+            
+            distx1 = x-x_close; distx2 = (x_close+dx)-x # calculating distance between x and x_grid_vals on both sides 
+            disty1 = y-y_close; disty2 = (y_close+dy)-y # calculating distance between y and y_grid_vals on both sides 
+            u = self.U
+            
+            # weights for each point
+            p1 = np.sqrt(distx1**2+disty1**2) 
+            p2 = np.sqrt(distx2**2+disty1**2) 
+            p3 = np.sqrt(disty2**2+distx1**2)
+            p4 = np.sqrt(distx2**2+disty2**2) 
+            
+            u_xy = ((p1)*u(x_close, y_close)
+                    +(p2)*u(x_close+1, y_close)
+                    +(p3)*u(x_close, y_close+1)
+                    +(p4)*u(x_close+1, y_close+1))
+        
+        return u_xy
 
 
 def test_convergence_poisson2d():
