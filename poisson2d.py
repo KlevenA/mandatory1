@@ -34,7 +34,7 @@ class Poisson2D:
         # self.f = sp.diff(self.ue, x, 2)+sp.diff(self.ue, y, 2)
         #self.px = Poisson(L, N)
         #self.py = Poisson(L, N)
-        self.create_mesh()
+        # self.create_mesh()
 
 
 
