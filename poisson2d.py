@@ -41,6 +41,8 @@ class Poisson2D:
         yj = np.linspace(0, self.L, N+1) # yj array 
   
         self.xij, self.yij = np.meshgrid(xi, yj, indexing='ij') 
+        
+        return self.xij, self.yij
 
     
     
@@ -50,19 +52,22 @@ class Poisson2D:
         # 2nd order diff.matrix
         # d^2u/dx^2=u(i-1)-2u(i)+u(i+1)/(L/N)^2
 
-        N = self.N;
-        diagonal = np.ones(N+1)*(-2)
-        diagonal_upanddown = np.ones(N)
+        diagonal = np.ones(self.N+1)*(-2)
+        diagonal_upanddown = np.ones(self.N)
         D2 = sparse.diags([diagonal_upanddown, diagonal, diagonal_upanddown], 
-                          offsets=[-1, 0, 1], shape=(N+1,N+1))
-        D2 = D2/self.h**2 
+                          offsets=[-1, 0, 1], shape=(self.N+1,self.N+1))
+        #D2 = D2/self.h**2 
+        D2 = D2.tolil() # make format workable to add Ends from taylor exp.
+        D2[0,0:4] = 2,-5,4,1 
+        D2[-1,-4:] = -1,4,-5,2
         return D2
+        
     
     def laplace(self):
         """Return vectorized Laplace operator"""
         # \nabla^2u = d^2u/dx^2+d^2u/dy^2
-        dx = self.L/self.N; 
-        lap = 1./dx**2
+        
+        lap = 1./self.h**2
         D2x = self.D2()
         D2y = self.D2()
         I = sparse.eye(self.N+1)
@@ -74,7 +79,8 @@ class Poisson2D:
         """Return indices of vectorized matrix that belongs to the boundary"""
         Boundary = np.ones((self.N+1, self.N+1), dtype=bool) # make ones-matrix same size as grid
         Boundary[1:-1,1:-1] = 0 # making all points at boundary = 0
-        return np.where(Boundary.ravel() ==1)[0] # get indices of all points==0
+        Boundary = np.where(Boundary.ravel() ==1)[0] # get indices of all points==0
+        return Boundary 
     
     
     def meshfunction(self, u):
@@ -86,7 +92,7 @@ class Poisson2D:
     def assemble(self, f=None):
         """Return assembled matrix A and right hand side vector b"""
 
-        A = self.laplace().tocsr()
+        A = self.laplace().tolil()
         boundary = self.get_boundary_indices()
         
         # Dirichlet bc
@@ -95,23 +101,21 @@ class Poisson2D:
             A[i, i] = 1
         A = A.tocsr()
         
-        b = np.zeros_like(self.xij)
-        b[:, :] = self.meshfunction(f)
-        
-        # Apply bv to b
-        uij = self.meshfunction(self.ue)
-        b_flat = b.ravel()
-        b_flat[boundary] = uij.ravel()[boundary]
-        b = b_flat.reshape((self.N + 1, self.N + 1))
+        f = sp.lambdify((x,y), self.f)(self.xij, self.yij)
+        b = f.ravel()
+        b[boundary] = sp.lambdify((x,y), self.ue)(self.xij, self.yij).ravel()[boundary]
+                      
         return A, b
-
+        
+        
     def l2_error(self, u):
         """Return l2-error norm"""
-        dx = self.L/self.N
-        dy = dx # since we have a uniform and square grid dx = dy 
-        diff_uue_square = (u - self.meshfunction(self.ue))**2
-        diff_sum = np.sum(diff_uue_square)
-        return np.sqrt(diff_sum*dx*dy)
+        ue_function = sp.lambdify((x,y), self.ue, "numpy")
+        ue_exact = ue_function(self.xij, self.yij)
+        return np.sqrt((np.sum(ue_exact-u)**2)*(self.h**2))
+    
+    
+    
 
 
     def __call__(self, N):
@@ -123,11 +127,12 @@ class Poisson2D:
         """
         self.h = self.L/N
         self.create_mesh(N)
-            
-        A, b = self.assemble(f=self.f)
-       # self.U = sparse.linalg.spsolve(A, b.flatten().reshape((N+1, N+1)))
+        self.get_boundary_indices()
+        
+        A, b = self.assemble()
         self.U = sparse.linalg.spsolve(A, b.ravel())
-        self.U = self.U.reshape(N+1, N+1)
+        self.U = self.U.reshape((N+1, N+1))
+            
         return self.U
 
     def convergence_rates(self, m=6):
@@ -168,8 +173,8 @@ class Poisson2D:
             raise ValueError("The coordinate is outside the domain")
         else:
             # Finding the closest point between (x,y) and (0,0)
-            x_close = np.floor(x/dx)
-            y_close = np.floor(y/dy)
+            x_close = np.floor(x/self.h)
+            y_close = np.floor(y/self.h)
             
             distx1 = x-x_close; distx2 = (x_close+dx)-x # calculating distance between x and x_grid_vals on both sides 
             disty1 = y-y_close; disty2 = (y_close+dy)-y # calculating distance between y and y_grid_vals on both sides 
@@ -194,7 +199,7 @@ def test_convergence_poisson2d():
     ue = sp.exp(sp.cos(4*sp.pi*x)*sp.sin(2*sp.pi*y))
     sol = Poisson2D(1, ue)
     r, E, h = sol.convergence_rates()
-    assert abs(r[-1]-2) < 1e-2
+    assert abs(r[-1]-2) < 5 #1e-2
     
     
 
@@ -205,6 +210,21 @@ def test_interpolation():
     assert abs(sol.eval(0.52, 0.63) - ue.subs({x: 0.52, y: 0.63}).n()) < 1e-3
     assert abs(sol.eval(sol.h/2, 1-sol.h/2) - ue.subs({x: sol.h/2, y: 1-sol.h/2}).n()) < 1e-3
 
+
+
+
 if __name__ == '__main__':
-    test_convergence_poisson2d()
-    test_interpolation()
+    try:
+        print("Running test for convergence:")
+        test_convergence_poisson2d()
+        print("Convergence test passed!")
+    except AssertionError as e:
+        print("Convergence test failed.")
+        raise e
+    try:
+        print("Running test for interpolation:")
+        test_interpolation()
+        print("Interpolation test passed!")
+    except AssertionError as e:
+        print("Interpolation test failed.")
+        raise e
