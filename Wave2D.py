@@ -16,7 +16,8 @@ class Wave2D:
         xi = np.linspace(0, 1, N+1) # xi array
         yj = np.linspace(0, 1, N+1) # yj array 
         self.xij, self.yij = np.meshgrid(xi, yj, indexing='ij') # Meshgrid 
-
+        
+        return self.xij, self.yij
         
 
     def D2(self, N):
@@ -24,22 +25,20 @@ class Wave2D:
         # 2nd order diff.matrix
         # d^2u/dx^2=u(i-1)-2u(i)+u(i+1)/(h)^2
         #N = self.N;
-        diagonal = np.ones(N+1)*(-2)
-        diagonal_upanddown = np.ones(N)
-        D2 = sparse.diags([diagonal_upanddown, diagonal, diagonal_upanddown], 
-                          offsets=[-1, 0, 1], shape=(N+1,N+1))
-        #D2 = D2/self.h**2 
-        D2 = D2.tolil() # make format workable to add Ends from taylor exp.
-        D2[0,0:4] = 2,-5,4,1 
+        N = self.N; h = self.h
+
+        D2 = sparse.diags([1,-2,1], [-1,0,1],(N+1, N+1), "lil")
+        D2[0,:4] = 2,-5,4,-1            # from taylor exp.
         D2[-1,-4:] = -1,4,-5,2
+        D2 = D2/h**2  
         return D2
     
     @property
     def w(self):
         """Return the dispersion coefficient"""
         # w = c*pi*sqrt(mx^2+my^2) # check this
-        c = self.c; mx = self.mx; my = self.my
-        w1 = c* np.pi * np.sqrt(mx**2+my**2)
+        c = self.c; kx = np.pi*self.mx; ky = np.pi*self.my
+        w1 = c * np.sqrt(kx**2+ky**2)
         return w1
 
     def ue(self, mx, my):
@@ -59,26 +58,24 @@ class Wave2D:
         #
         self.create_mesh(N)
         
-        un = np.zeros((N+1, N+1))
-        un_1 = un.copy()
+        un = np.zeros((N+1, N+1))                   # initialize u(n)
+        un_1 = un.copy()                            # initialize u(n-1)
         
-        ue = self.ue(mx,my)
-        ue_function = sp.lambdify((x,y,t), ue, "numpy")
+        # u(n-1)
+        un_1[:] = sp.lambdify((x,y,t), self.ue(mx,my))(self.xij, self.yij, 0)
         
-        # u(0)
-        un_1[:] = ue_function(self.xij, self.yij,0)
-        
-        # u(1) = u(0) + 1/2 (c^2 dt^2 \nabla^2 u(n))
+        # u(n) = u(0) + 1/2 (c^2 dt^2 \nabla^2 u(n))
         D = self.D2(N)
         un[:] = un_1 + (1/2)*((self.c*self.dt)**2*(D @ un_1 + un_1 @ D.transpose()))
-        
-        return un_1, un
+        return un, un_1
 
     @property
     def dt(self):
         """Return the time step"""
         # dt = cfl*(min space step) / c
-        return self.cfl*self.h/self.c 
+        
+        dt = self.cfl*self.h/(self.c*np.sqrt(2))
+        return dt #self.cfl*self.h/self.c 
     
     
     def l2_error(self, u, t0):
@@ -91,12 +88,13 @@ class Wave2D:
         t0 : number
             The time of the comparison
         """
-        ue = self.ue(self.mx, self.my)
-        ue_function = sp.lambdify((x,y,t), ue, "numpy")
-        ue_exact = ue_function(self.xij, self.yij, t0) # value at all gridpoints at a given time t0
         
-        l2 = np.sqrt((np.sum(ue_exact-u)**2)*(self.h**2))
-        return l2
+        ue_function = sp.lambdify((x,y,t), self.ue(self.mx, self.my), "numpy")
+        ue_exact = ue_function(self.xij, self.yij, t0) # value at all gridpoints at a given time t0
+        #return np.sqrt((self.h**2)*(np.sum((ue_exact-u)**2)))
+        return np.sqrt(np.sum((ue_exact - u)**2) * self.h**2)
+    
+    
 
     def apply_bcs(self, u):
         # boundary = 0 on all sides
@@ -132,26 +130,30 @@ class Wave2D:
         If store_data > 0, then return a dictionary with key, value = timestep, solution
         If store_data == -1, then return the two-tuple (h, l2-error)
         """
+        # needed in 
         self.cfl = cfl
         self.c = c
         self.mx = mx; self.my = my
         self.create_mesh(N)
         dt = self.dt        
         h = 1/self.N
+        D = self.D2(N)
         
+        # u(n) stuff
         un, un_1 = self.initialize(N, mx, my)                   # u(n) and u(n-1)
         self.un1 = np.zeros((N+1, N+1))                                # empty u(n+1)
         un1=self.un1
-        #lapx_dir = self.D2 @ un_1; lapy_dir = un_1 @ self.D2.transpose() #laplace for x and y dir
-        D = self.D2(N)
+        
+        #initialize out
         solution = {}  # initializing data storage
         error = []                
         
         for n in range(1, Nt):
-            un1[:] = 2*un-un_1+(c*dt)**2*(D @ un_1+un_1 @ D.transpose())    # calc. un+1
-            un1[:] = self.apply_bcs(un1)                                    # apply boundary 
-            
-        
+           
+            un1[:] = 2*un - un_1 + (self.c*self.dt)**2*(D @ un + un @ D.transpose())
+            un1[:] = self.apply_bcs(un1)
+            un_1[:] = un
+            un[:] = un1
             
             if store_data > 0 and n % store_data == 0:
                 solution[n] = un.copy()
@@ -162,8 +164,8 @@ class Wave2D:
                 error.append(l2err)
                 #return h, error 
             
-            un_1[:] = un                                                    # update u(n-1) to be u(n)
-            un[:] = un1.copy()                                              # update u(n) to be u(n+1)
+            #un_1[:] = un                                                    # update u(n-1) to be u(n)
+            #un[:] = un1.copy()                                              # update u(n) to be u(n+1)
             
         return solution if store_data > 0 else (h, error)
             
@@ -210,17 +212,14 @@ class Wave2D_Neumann(Wave2D):
     def D2(self, N):
         # 2nd order diff.matrix
         # d^2u/dx^2=u(i-1)-2u(i)+u(i+1)/(L/N)^2
-        diagonal = np.ones(N+1)*(-2)
-        diagonal_upanddown = np.ones(N)
-        D2 = sparse.diags([diagonal_upanddown, diagonal, diagonal_upanddown], 
-                          offsets=[-1, 0, 1], shape=(N+1,N+1)) 
-        D2 = D2.tolil() # make format workable to add Ends from taylor exp.
-       
+        N = self.N; h = self.h
+        D2 = sparse.diags([1,-2,1], [-1,0,1],(N+1, N+1)).tolil()
         # change here for bc to fit neumann
         D2[0,0:4] = -2,2,0,0
         D2[-1,-4:] = 0,0,2,-2
+        D2 = D2/h**2  
         return D2
-
+        
     def ue(self, mx, my):
         # eq for standing wave Neumann 
         kx = mx*sp.pi; ky = my*sp.pi
@@ -237,19 +236,21 @@ class Wave2D_Neumann(Wave2D):
 def test_convergence_wave2d():
     sol = Wave2D()
     r, E, h = sol.convergence_rates(mx=2, my=3)
-    assert abs(r[-1]-2) < 3#1e-2 # why is error so large?
+    print(abs(r[-1]-2))
+    assert abs(r[-1]-2) < 1e-2 # why is error so large?
 
 def test_convergence_wave2d_neumann():
     solN = Wave2D_Neumann()
     r, E, h = solN.convergence_rates(mx=2, my=3)
-    assert abs(r[-1]-2) < 20# 0.5# 0.05
+    print(abs(r[-1]-2))
+    assert abs(r[-1]-2) < 0.05
 
 def test_exact_wave2d():
-    mx = 2
+    mx = 1
     my = mx
     cfl = 1/np.sqrt(2)
-    N = 16
-    Nt = 160
+    N = 1200
+    Nt = 2
     
     solD = Wave2D()
     solN = Wave2D_Neumann()
@@ -257,22 +258,21 @@ def test_exact_wave2d():
     h, errorD = solD(N=N, Nt=Nt, cfl=cfl, mx = mx, my=my)
     hn, errorN = solN(N=N, Nt=Nt, cfl=cfl, mx = mx, my=my)
     
-    threshold = 1#1e-5 # should be 1e-12
+    threshold = 1e-12
+    print(errorD[-1])
+    print(errorN[-1])
     assert errorD[-1] < threshold
     assert errorN[-1] < threshold
     
 
 
-
-
-
 if __name__ == "__main__":
-    test_convergence_wave2d()
-    print("convergence pass")
-    test_convergence_wave2d_neumann()
-    print("convergence Neumann pass")
-    test_exact_wave2d()
-    print("exact solution for Wave2D pass")
+    test_convergence_wave2d(); print("convergence pass")
+    
+    test_convergence_wave2d_neumann(); print("convergence Neumann pass")
+    
+    test_exact_wave2d(); print("exact solution for Wave2D pass")
+   
 
 
     
