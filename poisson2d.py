@@ -1,7 +1,7 @@
 import numpy as np
 import sympy as sp
 import scipy.sparse as sparse
-
+from scipy.interpolate import interpn
 
 x, y = sp.symbols('x,y')
 
@@ -37,10 +37,10 @@ class Poisson2D:
         """Create 2D mesh and store in self.xij and self.yij"""
         self.N = N
         self.h = self.L/N
-        xi = np.linspace(0, self.L, N+1) # xi array
-        yj = np.linspace(0, self.L, N+1) # yj array 
+        self.xi = np.linspace(0, self.L, N+1) # xi array
+        self.yj = np.linspace(0, self.L, N+1) # yj array 
   
-        self.xij, self.yij = np.meshgrid(xi, yj, indexing='ij') 
+        self.xij, self.yij = np.meshgrid(self.xi, self.yj, indexing='ij') 
         
         return self.xij, self.yij
 
@@ -50,49 +50,40 @@ class Poisson2D:
     def D2(self):
         """Return second order differentiation matrix"""
         # 2nd order diff.matrix
-        # d^2u/dx^2=u(i-1)-2u(i)+u(i+1)/(L/N)^2
+        N = self.N; h = self.h
 
-        diagonal = np.ones(self.N+1)*(-2)
-        diagonal_upanddown = np.ones(self.N)
-        D2 = sparse.diags([diagonal_upanddown, diagonal, diagonal_upanddown], 
-                          offsets=[-1, 0, 1], shape=(self.N+1,self.N+1))
-        #D2 = D2/self.h**2 
-        D2 = D2.tolil() # make format workable to add Ends from taylor exp.
-        D2[0,0:4] = 2,-5,4,1 
+        D2 = sparse.diags([1,-2,1], [-1,0,1],(N+1, N+1)).tolil()
+        D2[0,:4] = 2,-5,4,-1            # from taylor exp.
         D2[-1,-4:] = -1,4,-5,2
+        D2 = D2/h**2  
         return D2
         
     
     def laplace(self):
         """Return vectorized Laplace operator"""
         # \nabla^2u = d^2u/dx^2+d^2u/dy^2
-        
-        lap = 1./self.h**2
-        D2x = self.D2()
-        D2y = self.D2()
-        I = sparse.eye(self.N+1)
-        laplace_vec =(sparse.kron(I, D2x).tocsr()+sparse.kron(D2y, I).tocsr())*lap
-        return laplace_vec # kroneckers
+        D2 = self.D2()
+        N = self.N
+        laplace_vec =(sparse.kron(D2, sparse.eye(N+1))+sparse.kron(sparse.eye(N+1), D2))
+        return laplace_vec
 
 
     def get_boundary_indices(self):
         """Return indices of vectorized matrix that belongs to the boundary"""
-        Boundary = np.ones((self.N+1, self.N+1), dtype=bool) # make ones-matrix same size as grid
-        Boundary[1:-1,1:-1] = 0 # making all points at boundary = 0
-        Boundary = np.where(Boundary.ravel() ==1)[0] # get indices of all points==0
-        return Boundary 
-    
-    
-    def meshfunction(self, u):
-        # in: u=fnction of choice
-        # out: u as arr
-        return sp.lambdify((x, y),u)(self.xij, self.yij)
+        boundary = np.ones((self.N+1, self.N+1), dtype=bool) # make ones-matrix same size as grid
+        boundary[1:-1,1:-1] = 0 # making all points at boundary = 0
+        boundary = np.where(boundary.ravel() ==1)[0] # get indices of all points==0
+        return boundary 
        
 
     def assemble(self, f=None):
         """Return assembled matrix A and right hand side vector b"""
 
-        A = self.laplace().tolil()
+        A = self.laplace()
+        A = A.tolil()
+        f = sp.lambdify((x,y), self.f)(self.xij, self.yij)
+        b = f.ravel()
+        
         boundary = self.get_boundary_indices()
         
         # Dirichlet bc
@@ -100,9 +91,6 @@ class Poisson2D:
             A[i] = 0
             A[i, i] = 1
         A = A.tocsr()
-        
-        f = sp.lambdify((x,y), self.f)(self.xij, self.yij)
-        b = f.ravel()
         b[boundary] = sp.lambdify((x,y), self.ue)(self.xij, self.yij).ravel()[boundary]
                       
         return A, b
@@ -112,10 +100,7 @@ class Poisson2D:
         """Return l2-error norm"""
         ue_function = sp.lambdify((x,y), self.ue, "numpy")
         ue_exact = ue_function(self.xij, self.yij)
-        return np.sqrt((np.sum(ue_exact-u)**2)*(self.h**2))
-    
-    
-    
+        return np.sqrt((self.h**2)*(np.sum((ue_exact-u)**2)))
 
 
     def __call__(self, N):
@@ -125,13 +110,13 @@ class Poisson2D:
         out: U, The solution as a Numpy array
 
         """
+        self.N = N
         self.h = self.L/N
         self.create_mesh(N)
         self.get_boundary_indices()
         
         A, b = self.assemble()
-        self.U = sparse.linalg.spsolve(A, b.ravel())
-        self.U = self.U.reshape((N+1, N+1))
+        self.U = sparse.linalg.spsolve(A, b.ravel()).reshape((N+1,N+1))
             
         return self.U
 
@@ -167,39 +152,26 @@ class Poisson2D:
         out The value of u(x, y)
 
         """
-        dx = self.h; dy = dx
         
         if x < 0 or x > self.L or y < 0 or y > self.L:
             raise ValueError("The coordinate is outside the domain")
         else:
-            # Finding the closest point between (x,y) and (0,0)
-            x_close = np.floor(x/self.h)
-            y_close = np.floor(y/self.h)
-            
-            distx1 = x-x_close; distx2 = (x_close+dx)-x # calculating distance between x and x_grid_vals on both sides 
-            disty1 = y-y_close; disty2 = (y_close+dy)-y # calculating distance between y and y_grid_vals on both sides 
-            u = self.U
-            
-            # weights for each point
-            p1 = 1/np.sqrt(distx1**2+disty1**2) 
-            p2 = 1/np.sqrt(distx2**2+disty1**2) 
-            p3 = 1/np.sqrt(disty2**2+distx1**2)
-            p4 = 1/np.sqrt(distx2**2+disty2**2) 
-            
-            u_xy = ((p1)*u(x_close, y_close)
-                    +(p2)*u(x_close+1, y_close)
-                    +(p3)*u(x_close, y_close+1)
-                    +(p4)*u(x_close+1, y_close+1))
-        
-        return u_xy
 
+            xi = np.linspace(0, self.L, self.N + 1)
+            yi = np.linspace(0, self.L, self.N + 1)
+        
+            # Interpolate 
+            uxy = interpn((xi, yi), self.U, np.array([[x, y]]), method="linear")[0]
+            return uxy
+
+    
 
 def test_convergence_poisson2d():
     # This exact solution is NOT zero on the entire boundary
     ue = sp.exp(sp.cos(4*sp.pi*x)*sp.sin(2*sp.pi*y))
     sol = Poisson2D(1, ue)
     r, E, h = sol.convergence_rates()
-    assert abs(r[-1]-2) < 5 #1e-2
+    assert abs(r[-1]-2) < 1e-2
     
     
 
@@ -207,24 +179,15 @@ def test_interpolation():
     ue = sp.exp(sp.cos(4*sp.pi*x)*sp.sin(2*sp.pi*y))
     sol = Poisson2D(1, ue)
     U = sol(100)
-    assert abs(sol.eval(0.52, 0.63) - ue.subs({x: 0.52, y: 0.63}).n()) < 1e-3
-    assert abs(sol.eval(sol.h/2, 1-sol.h/2) - ue.subs({x: sol.h/2, y: 1-sol.h/2}).n()) < 1e-3
+    threshold = 1e-3
+    assert abs(sol.eval(0.52, 0.63) - ue.subs({x: 0.52, y: 0.63}).n()) < threshold
+    assert abs(sol.eval(sol.h/2, 1-sol.h/2) - ue.subs({x: sol.h/2, y: 1-sol.h/2}).n()) < threshold
 
 
 
-
-if __name__ == '__main__':
-    try:
-        print("Running test for convergence:")
-        test_convergence_poisson2d()
-        print("Convergence test passed!")
-    except AssertionError as e:
-        print("Convergence test failed.")
-        raise e
-    try:
-        print("Running test for interpolation:")
-        test_interpolation()
-        print("Interpolation test passed!")
-    except AssertionError as e:
-        print("Interpolation test failed.")
-        raise e
+        
+if __name__ == "__main__":
+    test_convergence_poisson2d()
+    print("convergence pass")
+    test_interpolation()
+    print("interpolation pass")
